@@ -2,7 +2,9 @@ mod commands;
 mod s3;
 mod sql;
 
+use aws_config::meta::region::RegionProviderChain;
 use clap::{arg, command, ArgAction, ArgMatches};
+use gluesql::core::sqlparser::keywords::EXISTS;
 use std::path::Path;
 
 use s3::S3;
@@ -48,20 +50,34 @@ async fn init(matches: &ArgMatches) -> anyhow::Result<()> {
 
     let s3 = S3::new(&bucket_name).await?;
 
-    // let resp = s3.key_exists("s3b.db").await?;
-    // println!("key_exists: {:?}", resp);
-
-    // s3.put(Path::new("_s3b_db")).await?;
-    s3.get("_s3b_db/").await?;
-
     // does bucket have db?
     //  if so, pull it
+    let exists = s3.key_exists("_s3b_db/db").await?;
+    println!("key_exists: {:?}", exists);
+    if exists {
+        // s3.get("_s3b_db/").await?;
+    }
 
-    let sql = Sql::new();
+    let mut sql = Sql::new();
+    sql.init().await?;
+    if !exists {
+        s3.put(Path::new("_s3b_db")).await?;
+    }
+
+    // sql.add_hostname("xlemovo").await?;
+    sql.get_hostnames().await;
 
     // does lock table exist?
     //   if not, create it?
     //     if not created then exit
+    // let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
+    // let config = aws_config::from_env().region(region_provider).load().await;
+    // let ddb = aws_sdk_dynamodb::Client::new(&config);
+    // let paginator = ddb.list_tables().into_paginator().items().send();
+    // let tables = paginator.collect::<Result<Vec<_>, _>>().await?;
+    // for name in &tables {
+    //     println!("table: {}", name);
+    // }
 
     Ok(())
 }

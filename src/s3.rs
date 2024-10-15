@@ -10,6 +10,7 @@ use aws_credential_types::provider::ProvideCredentials;
 use futures::StreamExt;
 use object_store::{
     aws::{AmazonS3, AmazonS3Builder},
+    path::Path as ObjectPath,
     Error, ObjectStore, PutPayload,
 };
 use walkdir::WalkDir;
@@ -47,7 +48,7 @@ impl S3 {
     }
 
     pub async fn key_exists(&self, key: &str) -> anyhow::Result<bool> {
-        match self.client.head(&object_store::path::Path::from(key)).await {
+        match self.client.head(&ObjectPath::from(key)).await {
             Ok(_) => Ok(true),
             Err(Error::NotFound { path: _, source: _ }) => Ok(false),
             Err(Error::Generic {
@@ -104,10 +105,7 @@ impl S3 {
         let payload = PutPayload::from_bytes(bytes.into());
         if let Err(err) = self
             .client
-            .put(
-                &object_store::path::Path::from(path.to_str().unwrap()),
-                payload,
-            )
+            .put(&ObjectPath::from(path.to_str().unwrap()), payload)
             .await
         {
             return Err(err.into());
@@ -117,7 +115,7 @@ impl S3 {
     }
 
     async fn get_one(&self, path: &str) -> anyhow::Result<()> {
-        match self.client.get(&object_store::path::Path::from(path)).await {
+        match self.client.get(&ObjectPath::from(path)).await {
             Ok(result) => {
                 write_bytes_to_file(&Path::new(path), result.bytes().await.unwrap().as_ref())
             }
@@ -141,7 +139,7 @@ fn write_bytes_to_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let mut buf = PathBuf::from(path);
     buf.pop();
     std::fs::create_dir_all(buf).unwrap();
-    
+
     match File::options().write(true).create(true).open(path) {
         Ok(mut file) => file.write_all(bytes).map_err(|err| err.into()),
         Err(err) => Err(err.into()),

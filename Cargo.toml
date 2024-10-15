@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1"
 aws-config = { version = "1.5", features = ["behavior-version-latest"] }
 aws-credential-types = "1.2.1"
-# aws-sdk-s3 = { version = "1.42", features = ["rt-tokio"] }
+aws-sdk-dynamodb = { version = "1.42", features = ["rt-tokio"] }
 bincode = "1.3"
 blake3 = { version = "1.5", features = ["rayon"] }
 clap = { version = "4.5", features = ["cargo"] }
