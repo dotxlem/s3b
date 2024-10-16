@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use anyhow::anyhow;
-use gluesql::prelude::{Glue, SledStorage, Value};
+use gluesql::prelude::{Glue, Payload, SledStorage, Value};
 
 pub struct Sql {
     glue: Glue<SledStorage>,
@@ -34,48 +36,63 @@ impl Sql {
         }
     }
 
-    pub async fn get_hostnames(&mut self) {
-        let queries = "SELECT id FROM hostnames;";
+    pub async fn get_hostnames(&mut self) -> anyhow::Result<Vec<HostnamesRow>> {
+        let queries = "SELECT * FROM hostnames;";
         match self.glue.execute(queries).await {
             Ok(mut res) => {
                 let payload = res.remove(0);
-                let rows = payload.select().unwrap().map(|row| {
-                    let id = match *row.get("id").unwrap() {
-                        Value::I64(v) => v,
-                        _ => panic!("`id` expected to be i64"),
-                    };
-                    println!("id = {}", *id);
-                    HostnamesRow { id: *id, name: "xlemovo".into() }
-                }).collect::<Vec<_>>();
-            },
-            Err(err) => ()/*Err(anyhow!(err))*/,
+                Ok(payload
+                    .select()
+                    .unwrap()
+                    .map(TryInto::<HostnamesRow>::try_into)
+                    .collect::<anyhow::Result<_>>()?)
+            }
+            Err(err) => Err(anyhow!(err)),
         }
     }
 
     pub async fn get_next_hostname_id(&mut self) -> anyhow::Result<i64> {
-        let queries = "SELECT * FROM hostnames ORDER BY id DESC LIMIT 1;";
+        let queries = "SELECT id FROM hostnames ORDER BY id DESC LIMIT 1;";
         match self.glue.execute(queries).await {
             Ok(mut res) => {
                 let payload = res.remove(0);
-                let rows = payload.select().unwrap().map(|row| {
-                    match *row.get("id").unwrap() {
+                let rows = payload
+                    .select()
+                    .unwrap()
+                    .map(|row| match *row.get("id").unwrap() {
                         Value::I64(v) => Ok(*v),
                         _ => Err(anyhow!("`id` expected to be i64")),
-                    }
-                }).collect::<anyhow::Result<Vec<i64>>>()?;
+                    })
+                    .collect::<anyhow::Result<Vec<i64>>>()?;
                 println!("rows={:?}", rows);
-                
+
                 match rows.get(0) {
                     Some(id) => Ok(*id + 1),
                     None => Ok(0i64),
                 }
-            },
+            }
             Err(err) => Err(anyhow!(err)),
         }
     }
 }
 
-struct HostnamesRow {
-    id: i64,
-    name: String,
+pub struct HostnamesRow {
+    pub id: i64,
+    pub name: String,
+}
+
+impl TryFrom<HashMap<&str, &Value>> for HostnamesRow {
+    type Error = anyhow::Error;
+
+    fn try_from(value: HashMap<&str, &Value>) -> Result<Self, Self::Error> {
+        let id = match *value.get("id").unwrap() {
+            Value::I64(v) => *v,
+            _ => return Err(anyhow!("`id` expected to be i64")),
+        };
+        let name = match *value.get("name").unwrap() {
+            Value::Str(v) => v.clone(),
+            _ => return Err(anyhow!("`name` is expected to be str")),
+        };
+        Ok(HostnamesRow { id, name })
+    }
 }

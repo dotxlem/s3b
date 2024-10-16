@@ -66,7 +66,10 @@ async fn init(matches: &ArgMatches) -> anyhow::Result<()> {
 
     sql.add_hostname("xlemovo").await?;
     sql.add_hostname("xlemstation").await?;
-    sql.get_hostnames().await;
+    sql.get_hostnames()
+        .await?
+        .iter()
+        .for_each(|h| println!("hostname={:?}", h.name));
 
     // does lock table exist?
     //   if not, create it?
