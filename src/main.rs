@@ -64,7 +64,8 @@ async fn init(matches: &ArgMatches) -> anyhow::Result<()> {
         s3.put(Path::new("_s3b_db")).await?;
     }
 
-    // sql.add_hostname("xlemovo").await?;
+    sql.add_hostname("xlemovo").await?;
+    sql.add_hostname("xlemstation").await?;
     sql.get_hostnames().await;
 
     // does lock table exist?
