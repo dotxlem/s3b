@@ -81,7 +81,7 @@ impl S3 {
     pub async fn get(&self, key: &str) -> anyhow::Result<()> {
         let last_char = key.get(key.len() - 1..key.len()).unwrap();
         if last_char == "/" {
-            let mut list_stream = self.client.list(Some(&object_store::path::Path::from(key)));
+            let mut list_stream = self.client.list(Some(&ObjectPath::from(key)));
             while let Some(meta) = list_stream.next().await.transpose().unwrap() {
                 if meta.size != 0 {
                     println!("Name: {}, size: {}", meta.location, meta.size);
