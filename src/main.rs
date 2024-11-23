@@ -3,6 +3,7 @@ mod s3;
 mod sql;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::anyhow;
 use aws_config::meta::region::RegionProviderChain;
@@ -16,15 +17,11 @@ use sql::Sql;
 #[tokio::main]
 async fn main() {
     let matches = command!()
+        .arg(arg!(--"bucket" <BUCKET>).required(true))
         .subcommand_required(true)
-        .subcommand(
-            command!("init")
-                .arg(arg!(--"bucket" <BUCKET>).required(true))
-                .arg(arg!(--"create").action(ArgAction::SetTrue)),
-        )
+        .subcommand(command!("init").arg(arg!(--"create").action(ArgAction::SetTrue)))
         .subcommand(
             command!("plan")
-                .arg(arg!(--"bucket" <BUCKET>).required(true))
                 .arg(
                     arg!(--"exclude" <EXCLUDE>)
                         .value_delimiter(' ')
@@ -39,21 +36,22 @@ async fn main() {
         .subcommand(command!("push"))
         .get_matches();
 
+    let bucket_name = matches.get_one::<String>("bucket").unwrap();
     if let Err(err) = match matches.subcommand() {
-        Some(("init", matches)) => init(matches).await,
-        Some(("plan", matches)) => plan(matches).await,
-        Some(("push", matches)) => push(matches).await,
+        Some(("init", subcommand)) => init(subcommand, bucket_name).await,
+        Some(("plan", subcommand)) => plan(subcommand, bucket_name).await,
+        Some(("push", subcommand)) => push(subcommand, bucket_name).await,
         _ => unreachable!("skipper's drunk!"),
     } {
         println!("ERROR: {:?}", err);
     }
 }
 
-async fn init(matches: &ArgMatches) -> anyhow::Result<()> {
+async fn init(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> {
     // init
     //  Check bucket for DB file; if not present, create & upload
 
-    let bucket_name = matches.get_one::<String>("bucket").unwrap();
+    // let bucket_name = matches.get_one::<String>("bucket").unwrap();
     let create_infra = matches.get_flag("create");
     println!("Bucket: {:?}", &bucket_name);
     println!("Create: {:?}", create_infra);
@@ -96,7 +94,7 @@ async fn init(matches: &ArgMatches) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn push(matches: &ArgMatches) -> anyhow::Result<()> {
+async fn push(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> {
     // push
     //  Get path
     //  Walkdir from path & enumerate files to upload
@@ -107,24 +105,23 @@ async fn push(matches: &ArgMatches) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
-    let bucket_name = matches
-        .get_one::<String>("bucket")
-        .expect("bucket name is a required argument");
-    let exclude: Vec<PathBuf> = match matches.get_many("exclude") {
+async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> {
+    use rayon::prelude::*;
+
+    let exclude: Vec<&String> = match matches.get_many("exclude") {
         Some(m) => m.collect(),
         None => Vec::new(),
-    }
-    .into_iter()
-    .map(|i: &String| Path::new(i).canonicalize().unwrap())
-    .collect();
-    let include: Vec<PathBuf> = match matches.get_many("include") {
+    };
+    // .into_iter()
+    // .map(|i: &String| Path::new(i).canonicalize().unwrap())
+    // .collect();
+    let include: Vec<&String> = match matches.get_many("include") {
         Some(m) => m.collect(),
         None => Vec::new(),
-    }
-    .into_iter()
-    .map(|i: &String| Path::new(i).canonicalize().unwrap())
-    .collect();
+    };
+    // .into_iter()
+    // .map(|i: &String| Path::new(i).canonicalize().unwrap())
+    // .collect();
     println!("exclude: {:?}", exclude);
     println!("include: {:?}", include);
     if include.len() > 0 && exclude.len() > 0 {
@@ -145,6 +142,9 @@ async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
         println!("remote = {}", entry.id);
     }
 
+    let spinner = indicatif::ProgressBar::new_spinner();
+    spinner.enable_steady_tick(Duration::from_millis(120));
+    spinner.set_message("Finding files...");
     let mut planned_entries: Vec<PathBuf> = Vec::new();
     for entry in WalkDir::new("./").min_depth(1) {
         let entry = entry.unwrap();
@@ -161,20 +161,42 @@ async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
                 continue;
             }
         }
-    }
-    for planned in planned_entries {
-        if planned.is_file() {
-            let contents = std::fs::read(planned.clone()).unwrap();
-            println!("hash  = {}", blake3::hash(&contents));
-            println!("entry = {}", planned.display());
+        if include.len() == 0 && exclude.len() == 0 {
+            planned_entries.push(entry);
         }
     }
+    spinner.finish_with_message(format!("Found {} entries", planned_entries.len()));
+    // for planned in planned_entries {
+    //     if planned.is_file() {
+    //         let contents = std::fs::read(planned.clone()).unwrap();
+    //         println!("hash  = {}", blake3::hash(&contents));
+    //         println!("entry = {}", planned.display());
+    //     }
+    // }
+    let pb = indicatif::ProgressBar::new(planned_entries.len() as u64);
+    planned_entries.par_iter().for_each(|entry| {
+        if entry.is_file() {
+            let contents = std::fs::read(entry.clone()).unwrap();
+            blake3::hash(&contents);
+            pb.inc(1);
+            // println!(
+            //     "entry = {}, hash  = {}",
+            //     entry.display(),
+            //     blake3::hash(&contents)
+            // );
+        }
+    });
+    pb.finish_with_message("done");
     Ok(())
 }
 
-fn filter(list: Vec<PathBuf>, entry: PathBuf) -> bool {
+fn filter(list: Vec<&String>, entry: PathBuf) -> bool {
     for l in list {
-        if entry.starts_with(l) {
+        if entry
+            .components()
+            .find(|&c| c.as_os_str().to_str().unwrap() == l.as_str())
+            .is_some()
+        {
             return true;
         }
     }
