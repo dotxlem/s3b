@@ -2,13 +2,16 @@ mod commands;
 mod s3;
 mod sql;
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::anyhow;
 use aws_config::meta::region::RegionProviderChain;
 use clap::{arg, command, ArgAction, ArgMatches};
 use gluesql::core::sqlparser::keywords::EXISTS;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use s3::S3;
@@ -96,12 +99,16 @@ async fn init(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
 
 async fn push(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> {
     // push
-    //  Get path
-    //  Walkdir from path & enumerate files to upload
     //  Fetch DB file and lock bucket
     //  Check uplist against DB for duplicates
     //  Iterate over uplist and hash with blake3 as upped; write to local DB file as upped.
     //  Upload DB file after list is complete
+    let fin = std::fs::File::open("./s3b_plan.bin").unwrap();
+    let mut decompressor = brotli::Decompressor::new(fin, 4096);
+    let mut buf: Vec<u8> = Vec::new();
+    decompressor.read_to_end(&mut buf).unwrap();
+    let plan: Plan = bincode::deserialize(&buf).unwrap();
+    println!("{:?}", plan);
     Ok(())
 }
 
@@ -112,16 +119,12 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         Some(m) => m.collect(),
         None => Vec::new(),
     };
-    // .into_iter()
-    // .map(|i: &String| Path::new(i).canonicalize().unwrap())
-    // .collect();
+
     let include: Vec<&String> = match matches.get_many("include") {
         Some(m) => m.collect(),
         None => Vec::new(),
     };
-    // .into_iter()
-    // .map(|i: &String| Path::new(i).canonicalize().unwrap())
-    // .collect();
+
     println!("exclude: {:?}", exclude);
     println!("include: {:?}", include);
     if include.len() > 0 && exclude.len() > 0 {
@@ -166,26 +169,28 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         }
     }
     spinner.finish_with_message(format!("Found {} entries", planned_entries.len()));
-    // for planned in planned_entries {
-    //     if planned.is_file() {
-    //         let contents = std::fs::read(planned.clone()).unwrap();
-    //         println!("hash  = {}", blake3::hash(&contents));
-    //         println!("entry = {}", planned.display());
-    //     }
-    // }
+
+    let plan_entries: Mutex<Vec<PlanEntry>> = Mutex::new(Vec::with_capacity(planned_entries.len()));
     let pb = indicatif::ProgressBar::new(planned_entries.len() as u64);
     planned_entries.par_iter().for_each(|entry| {
         if entry.is_file() {
             let contents = std::fs::read(entry.clone()).unwrap();
-            blake3::hash(&contents);
+            let plan_entry = PlanEntry {
+                path: entry.clone(),
+                hash: blake3::hash(&contents).to_string(),
+            };
+
+            plan_entries.lock().unwrap().push(plan_entry);
             pb.inc(1);
-            // println!(
-            //     "entry = {}, hash  = {}",
-            //     entry.display(),
-            //     blake3::hash(&contents)
-            // );
         }
     });
+
+    let plan = Plan { base_path: PathBuf::from("./").canonicalize().unwrap(), entries: plan_entries.into_inner().unwrap() };
+    let plan_bytes = bincode::serialize(&plan).unwrap();
+    let fout = std::fs::File::create("./s3b_plan.bin").unwrap();
+    let mut compressor = brotli::CompressorWriter::new(fout, 4096, 11, 22);
+    compressor.write_all(&plan_bytes).unwrap();
+
     pb.finish_with_message("done");
     Ok(())
 }
@@ -201,4 +206,16 @@ fn filter(list: Vec<&String>, entry: PathBuf) -> bool {
         }
     }
     return false;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Plan {
+    base_path: PathBuf,
+    entries: Vec<PlanEntry>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PlanEntry {
+    path: PathBuf,
+    hash: String,
 }
