@@ -5,7 +5,7 @@ mod sql;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::anyhow;
 use aws_config::meta::region::RegionProviderChain;
@@ -98,16 +98,24 @@ async fn init(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
 }
 
 async fn push(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> {
+    // TODO a lot of this will be handled by plan instead
+
     // push
     //  Fetch DB file and lock bucket
     //  Check uplist against DB for duplicates
     //  Iterate over uplist and hash with blake3 as upped; write to local DB file as upped.
     //  Upload DB file after list is complete
-    let fin = std::fs::File::open("./s3b_plan.bin").unwrap();
-    let mut decompressor = brotli::Decompressor::new(fin, 4096);
-    let mut buf: Vec<u8> = Vec::new();
-    decompressor.read_to_end(&mut buf).unwrap();
-    let plan: Plan = bincode::deserialize(&buf).unwrap();
+
+    // let fin = std::fs::File::open("./s3b_plan.bin").unwrap();
+    // let mut decompressor = brotli::Decompressor::new(fin, 4096);
+    // let mut buf: Vec<u8> = Vec::new();
+    // decompressor.read_to_end(&mut buf).unwrap();
+    // let plan: Plan = bincode::deserialize(&buf).unwrap();
+    let plan = Plan::read();
+    let mut sql = Sql::new().await?;
+    for entry in &plan.entries {
+        sql.put_entry(entry).await?;
+    }
     println!("{:?}", plan);
     Ok(())
 }
@@ -131,79 +139,120 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         return Err(anyhow!("exclude and include flags are mutually exclusive"));
     }
 
-    let s3 = S3::new(&bucket_name).await?;
-    let exists = s3.key_exists("_s3b_db/db").await?;
-    println!("key_exists: {:?}", exists);
-    if exists {
-        s3.get("_s3b_db/").await?;
-    }
-
-    let mut sql = Sql::new();
-    sql.init().await?;
-    let entries = sql.get_entries().await?;
-    for entry in entries {
-        println!("remote = {}", entry.id);
-    }
-
     let spinner = indicatif::ProgressBar::new_spinner();
     spinner.enable_steady_tick(Duration::from_millis(120));
     spinner.set_message("Finding files...");
-    let mut planned_entries: Vec<PathBuf> = Vec::new();
+    let mut filtered_entries: Vec<PathBuf> = Vec::new();
     for entry in WalkDir::new("./").min_depth(1) {
         let entry = entry.unwrap();
         let entry = entry.path().canonicalize().unwrap();
-        if exclude.len() > 0 {
-            if !filter(exclude.clone(), entry.clone()) {
-                planned_entries.push(entry);
-            }
-            continue;
-        }
-        if include.len() > 0 {
-            if filter(include.clone(), entry.clone()) {
-                planned_entries.push(entry);
+        if entry.is_file() {
+            if exclude.len() > 0 {
+                if !filter(exclude.clone(), entry.clone()) {
+                    filtered_entries.push(entry);
+                }
                 continue;
             }
-        }
-        if include.len() == 0 && exclude.len() == 0 {
-            planned_entries.push(entry);
+            if include.len() > 0 {
+                if filter(include.clone(), entry.clone()) {
+                    filtered_entries.push(entry);
+                    continue;
+                }
+            }
+            if include.len() == 0 && exclude.len() == 0 {
+                filtered_entries.push(entry);
+            }
         }
     }
-    spinner.finish_with_message(format!("Found {} entries", planned_entries.len()));
+    spinner.finish_with_message(format!("Found {} entries", filtered_entries.len()));
 
-    let plan_entries: Mutex<Vec<PlanEntry>> = Mutex::new(Vec::with_capacity(planned_entries.len()));
-    let pb = indicatif::ProgressBar::new(planned_entries.len() as u64);
-    planned_entries.par_iter().for_each(|entry| {
-        if entry.is_file() {
-            let contents = std::fs::read(entry.clone()).unwrap();
-            let plan_entry = PlanEntry {
-                path: entry.clone(),
-                hash: blake3::hash(&contents).to_string(),
-            };
+    let base_path = PathBuf::from("./").canonicalize().unwrap();
+    let plan_entries: Mutex<Vec<PlanEntry>> =
+        Mutex::new(Vec::with_capacity(filtered_entries.len()));
+    let pb = indicatif::ProgressBar::new(filtered_entries.len() as u64);
+    filtered_entries.into_par_iter().for_each(|path| {
+        let metadata = std::fs::metadata(&path).unwrap();
+        let modified = metadata.modified().unwrap();
+        let contents = std::fs::read(&path).unwrap();
+        let hash = blake3::hash(&contents).to_string();
+        let key = path
+            .to_str()
+            .unwrap()
+            .replace(&format!("{}/", base_path.to_str().unwrap()), "");
+        let plan_entry = PlanEntry {
+            key, 
+            path,
+            hash,
+            modified,
+        };
+        // println!("key={}, hash={}", key.clone(), hash.clone());
 
-            plan_entries.lock().unwrap().push(plan_entry);
-            pb.inc(1);
-        }
+        plan_entries.lock().unwrap().push(plan_entry);
+        pb.inc(1);
     });
-
-    let plan = Plan { base_path: PathBuf::from("./").canonicalize().unwrap(), entries: plan_entries.into_inner().unwrap() };
-    let plan_bytes = bincode::serialize(&plan).unwrap();
-    let fout = std::fs::File::create("./s3b_plan.bin").unwrap();
-    let mut compressor = brotli::CompressorWriter::new(fout, 4096, 11, 22);
-    compressor.write_all(&plan_bytes).unwrap();
-
     pb.finish_with_message("done");
+
+    // TODO how much checking against the DB does `plan` do?
+    //      - identical hash & key should be skipped
+    //      - identical hash at different keys should be highlighted
+    //      - different hash at same key should be prompted for options, check modified time
+    // TODO how are identical keys from multiple base paths (origins) handled?
+    //      - emergent from above; prompt if different hash should show base path & modified time
+    //      - opting to keep both should append the base path somehow to the key? or is keeping both not possible?
+    //          - if not possible, options are skip or overwrite
+
+    // TODO check for lock, lock bucket
+    //      lock should be its own operation, i.e. s3b lock & s3b lock --release
+    // let s3 = S3::new(&bucket_name).await?;
+    // let exists = s3.key_exists("_s3b_db/db").await?;
+    // println!("key_exists: {:?}", exists);
+    // if exists {
+    //     s3.get("_s3b_db/").await?;
+    // }
+
+    let mut sql = Sql::new().await?;
+    let remote_entries = sql.get_entries().await?;
+    let plan_entries = plan_entries.into_inner().unwrap();
+    use std::time::Instant;
+    for entry in &plan_entries {
+        let before = Instant::now();
+        if let Some(r) = remote_entries.iter().find(|&e| e.hash == entry.hash) {
+            println!("identical contents entry={:?} exists at {}", entry.path, r.key);
+        }
+        println!("Elapsed time: {:.2?}", before.elapsed());
+        let before = Instant::now();
+        let r = sql.get_entry_by_hash(&entry.hash).await.unwrap();
+        if r.len() != 0 {
+            println!("identical contents entry={:?} exists at {}", entry.path, r[0].key);
+        }
+        println!("Elapsed time: {:.2?}\n", before.elapsed());
+    }
+
+    let plan = Plan {
+        base_path,
+        entries: plan_entries,
+    };
+    plan.write();
+    // let plan_bytes = bincode::serialize(&plan).unwrap();
+    // let fout = std::fs::File::create("./s3b_plan.bin").unwrap();
+    // let mut compressor = brotli::CompressorWriter::new(fout, 4096, 11, 22);
+    // compressor.write_all(&plan_bytes).unwrap();
+
     Ok(())
 }
 
 fn filter(list: Vec<&String>, entry: PathBuf) -> bool {
     for l in list {
-        if entry
-            .components()
-            .find(|&c| c.as_os_str().to_str().unwrap() == l.as_str())
-            .is_some()
-        {
+        if entry.to_str().unwrap().contains(l.as_str()) {
             return true;
         }
+        // if entry
+        //     .components()
+        //     .find(|&c| c.as_os_str().to_str().unwrap() == l.as_str())
+        //     .is_some()
+        // {
+        //     return true;
+        // }
     }
     return false;
 }
@@ -211,11 +260,30 @@ fn filter(list: Vec<&String>, entry: PathBuf) -> bool {
 #[derive(Debug, Serialize, Deserialize)]
 struct Plan {
     base_path: PathBuf,
-    entries: Vec<PlanEntry>,
+    entries: Vec<PlanEntry>, // TODO this might be more efficient as a map
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+impl Plan {
+    fn read() -> Self {
+        let fin = std::fs::File::open("./s3b_plan.bin").unwrap();
+        let mut decompressor = brotli::Decompressor::new(fin, 4096);
+        let mut buf: Vec<u8> = Vec::new();
+        decompressor.read_to_end(&mut buf).unwrap();
+        bincode::deserialize(&buf).unwrap()
+    }
+
+    fn write(&self) {
+        let plan_bytes = bincode::serialize(&self).unwrap();
+        let fout = std::fs::File::create("./s3b_plan.bin").unwrap();
+        let mut compressor = brotli::CompressorWriter::new(fout, 4096, 11, 22);
+        compressor.write_all(&plan_bytes).unwrap();
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct PlanEntry {
+    key: String,
     path: PathBuf,
     hash: String,
+    modified: SystemTime,
 }
