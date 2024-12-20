@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use anyhow::anyhow;
-use gluesql::prelude::{Glue, Payload, SledStorage, Value};
+use gluesql::prelude::{Glue, SledStorage, Value};
 
 use crate::PlanEntry;
 
@@ -138,6 +138,7 @@ impl Sql {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct EntriesRow {
     pub key: String,

@@ -15,6 +15,9 @@ Cargo.lock
 
 # s3b
 _s3b_db
+clean
+debug
+release
 
 
 # Added by cargo

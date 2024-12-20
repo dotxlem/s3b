@@ -3,15 +3,13 @@ mod s3;
 mod sql;
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use anyhow::anyhow;
-use aws_config::meta::region::RegionProviderChain;
 use clap::{arg, command, ArgAction, ArgMatches};
-use gluesql::core::sqlparser::keywords::EXISTS;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
@@ -269,9 +267,11 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
             .is_some()
         {
             // key exists with same hash, skip
-            println!("Key {} exists with same hash", &this_key);
+            // println!("Key {} exists with same hash", &this_key);
             skip = true;
         }
+        // TODO this is potentially an overwhelming number of warnings, which also needs to be deduped between entries
+        //      could instead make this a separate command operating on the remote store
         if !skip && existing_hashes.len() > 0 {
             // not skipped but identical hashes found, flag
             println!(
@@ -279,17 +279,17 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
                 &this_key, existing_hashes
             );
         }
-        if skip && existing_hashes.len() > 1 {
-            // skipped but there are multiple identical hashes, flag
-            println!(
-                "Key {} skipped but remote objects with identical hashes found: {:?}",
-                &this_key,
-                existing_hashes
-                    .iter()
-                    .filter(|e| e.key != this_key)
-                    .collect::<Vec<_>>()
-            );
-        }
+        // if skip && existing_hashes.len() > 1 {
+        //     // skipped but there are multiple identical hashes, flag
+        //     println!(
+        //         "Key {} skipped but remote objects with identical hashes found: {:?}",
+        //         &this_key,
+        //         existing_hashes
+        //             .iter()
+        //             .filter(|e| e.key != this_key)
+        //             .collect::<Vec<_>>()
+        //     );
+        // }
 
         if !skip {
             planned_entries.lock().unwrap().push(plan_entry);
