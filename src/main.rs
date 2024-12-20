@@ -4,6 +4,7 @@ mod sql;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
@@ -11,11 +12,12 @@ use anyhow::anyhow;
 use aws_config::meta::region::RegionProviderChain;
 use clap::{arg, command, ArgAction, ArgMatches};
 use gluesql::core::sqlparser::keywords::EXISTS;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use s3::S3;
-use sql::Sql;
+use sql::{EntriesRow, Sql};
 
 #[tokio::main]
 async fn main() {
@@ -146,7 +148,7 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
     for entry in WalkDir::new("./").min_depth(1) {
         let entry = entry.unwrap();
         let entry = entry.path().canonicalize().unwrap();
-        if entry.is_file() {
+        if entry.is_file() && !entry.is_symlink() {
             if exclude.len() > 0 {
                 if !filter(exclude.clone(), entry.clone()) {
                     filtered_entries.push(entry);
@@ -164,42 +166,17 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
             }
         }
     }
+    let filtered_entries: Vec<PathBuf> = filtered_entries
+        .into_iter()
+        .unique()
+        .filter(|path| {
+            path.components()
+                .find(|&c| c.as_os_str().to_str().unwrap() == "_s3b_db")
+                .is_none()
+                && path.file_name().unwrap() != "s3b_plan.bin"
+        })
+        .collect();
     spinner.finish_with_message(format!("Found {} entries", filtered_entries.len()));
-
-    let base_path = PathBuf::from("./").canonicalize().unwrap();
-    let plan_entries: Mutex<Vec<PlanEntry>> =
-        Mutex::new(Vec::with_capacity(filtered_entries.len()));
-    let pb = indicatif::ProgressBar::new(filtered_entries.len() as u64);
-    filtered_entries.into_par_iter().for_each(|path| {
-        let metadata = std::fs::metadata(&path).unwrap();
-        let modified = metadata.modified().unwrap();
-        let contents = std::fs::read(&path).unwrap();
-        let hash = blake3::hash(&contents).to_string();
-        let key = path
-            .to_str()
-            .unwrap()
-            .replace(&format!("{}/", base_path.to_str().unwrap()), "");
-        let plan_entry = PlanEntry {
-            key, 
-            path,
-            hash,
-            modified,
-        };
-        // println!("key={}, hash={}", key.clone(), hash.clone());
-
-        plan_entries.lock().unwrap().push(plan_entry);
-        pb.inc(1);
-    });
-    pb.finish_with_message("done");
-
-    // TODO how much checking against the DB does `plan` do?
-    //      - identical hash & key should be skipped
-    //      - identical hash at different keys should be highlighted
-    //      - different hash at same key should be prompted for options, check modified time
-    // TODO how are identical keys from multiple base paths (origins) handled?
-    //      - emergent from above; prompt if different hash should show base path & modified time
-    //      - opting to keep both should append the base path somehow to the key? or is keeping both not possible?
-    //          - if not possible, options are skip or overwrite
 
     // TODO check for lock, lock bucket
     //      lock should be its own operation, i.e. s3b lock & s3b lock --release
@@ -212,26 +189,126 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
 
     let mut sql = Sql::new().await?;
     let remote_entries = sql.get_entries().await?;
-    let plan_entries = plan_entries.into_inner().unwrap();
-    use std::time::Instant;
-    for entry in &plan_entries {
-        let before = Instant::now();
-        if let Some(r) = remote_entries.iter().find(|&e| e.hash == entry.hash) {
-            println!("identical contents entry={:?} exists at {}", entry.path, r.key);
-        }
-        println!("Elapsed time: {:.2?}", before.elapsed());
-        let before = Instant::now();
-        let r = sql.get_entry_by_hash(&entry.hash).await.unwrap();
-        if r.len() != 0 {
-            println!("identical contents entry={:?} exists at {}", entry.path, r[0].key);
-        }
-        println!("Elapsed time: {:.2?}\n", before.elapsed());
-    }
 
-    let plan = Plan {
-        base_path,
-        entries: plan_entries,
-    };
+    let base_path = PathBuf::from("./").canonicalize().unwrap();
+    let planned_entries: Mutex<Vec<PlanEntry>> =
+        Mutex::new(Vec::with_capacity(filtered_entries.len()));
+    let pb = indicatif::ProgressBar::new(filtered_entries.len() as u64);
+    println!("Processing entries...");
+    let num_skipped: AtomicU64 = AtomicU64::new(0);
+    filtered_entries.into_par_iter().for_each(|path| {
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_err) => panic!("could not stat {:?}", &path),
+        };
+        let modified = metadata.modified().unwrap();
+        let contents = std::fs::read(&path).unwrap();
+        let hash = blake3::hash(&contents).to_string();
+        let key = path
+            .to_str()
+            .unwrap()
+            .replace(&format!("{}/", base_path.to_str().unwrap()), "");
+        let plan_entry = PlanEntry {
+            key: key.clone(),
+            path,
+            hash: hash.clone(),
+            modified,
+        };
+        // println!("key={}, hash={}", key.clone(), hash.clone());
+
+        // if plan_entries.lock().unwrap().iter().find(|e| e.key == plan_entry.key).is_some() {
+        //     println!("dupe={:?}", &plan_entry.key);
+        // }
+        // TODO how much checking against the DB does `plan` do?
+        //      - identical hash & key should be skipped
+        //      - identical hash at different keys should be highlighted
+        //      - different hash at same key should be prompted for options, check modified time
+        // TODO how are identical keys from multiple base paths (origins) handled?
+        //      - emergent from above; prompt if different hash should show base path & modified time
+        //      - opting to keep both should append the base path somehow to the key? or is keeping both not possible?
+        //          - if not possible, options are skip or overwrite
+        // if let None = remote_entries.iter().find(|&e| e.hash.eq(&hash.clone()) && e.key.eq(&key.clone())) {
+        //     planned_entries.lock().unwrap().push(plan_entry);
+        // } else {
+        //     num_skipped.fetch_add(1, Ordering::Relaxed);
+        // }
+
+        let mut modified_key: Option<&EntriesRow> = None;
+        let mut existing_hashes: Vec<&EntriesRow> = Vec::new();
+        let this_hash = hash.clone();
+        let this_key = key.clone();
+        remote_entries.iter().for_each(|remote| {
+            if remote.hash == this_hash {
+                existing_hashes.push(remote);
+            }
+            if remote.key == this_key && remote.hash != this_hash {
+                modified_key = Some(remote);
+            }
+        });
+        let mut skip = false;
+        if let Some(remote) = modified_key {
+            // different hash at same key, prompt
+            let this_modified_time = modified
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            if remote.modified > this_modified_time {
+                println!("Key {} exists, remote is newer", &remote.key);
+            } else if remote.modified < this_modified_time {
+                println!("Key {} exists, remote is older", &remote.key);
+            } else {
+                println!(
+                    "Key {} exists with different hash but timestamp is same; this may be a bug",
+                    &remote.key
+                );
+            }
+        }
+        if existing_hashes
+            .iter()
+            .find(|&remote| remote.key == this_key)
+            .is_some()
+        {
+            // key exists with same hash, skip
+            println!("Key {} exists with same hash", &this_key);
+            skip = true;
+        }
+        if !skip && existing_hashes.len() > 0 {
+            // not skipped but identical hashes found, flag
+            println!(
+                "Key {} does not exist but remote objects with identical hashes found: {:?}",
+                &this_key, existing_hashes
+            );
+        }
+        if skip && existing_hashes.len() > 1 {
+            // skipped but there are multiple identical hashes, flag
+            println!(
+                "Key {} skipped but remote objects with identical hashes found: {:?}",
+                &this_key,
+                existing_hashes
+                    .iter()
+                    .filter(|e| e.key != this_key)
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        if !skip {
+            planned_entries.lock().unwrap().push(plan_entry);
+        } else {
+            num_skipped.fetch_add(1, Ordering::Relaxed);
+        }
+
+        pb.inc(1);
+    });
+    pb.finish_with_message("done");
+    println!(
+        "Skipped {} existing, umodified entries",
+        num_skipped.load(Ordering::Relaxed)
+    );
+
+    let entries = planned_entries.into_inner().unwrap();
+
+    let plan = Plan { base_path, entries };
+    println!("plan={:?}", plan);
     plan.write();
     // let plan_bytes = bincode::serialize(&plan).unwrap();
     // let fout = std::fs::File::create("./s3b_plan.bin").unwrap();

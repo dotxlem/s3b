@@ -16,7 +16,7 @@ impl Sql {
         let mut glue = Glue::new(storage);
 
         let queries = r#"
-        CREATE TABLE IF NOT EXISTS entries (key TEXT PRIMARY KEY, hash TEXT, path TEXT, modified INT);
+        CREATE TABLE IF NOT EXISTS entries (key TEXT PRIMARY KEY, hash TEXT, path TEXT, modified UINT64);
         "#;
 
         match glue.execute(queries).await {
@@ -51,14 +51,17 @@ impl Sql {
     }
 
     pub async fn put_entry(&mut self, entry: &PlanEntry) -> anyhow::Result<()> {
-        println!("hash={}", entry.hash);
         let query = format!(
             // "INSERT INTO entries VALUES ('{{\"key\": \"{}\", \"hash\": \"{}\", \"path\": \"{}\", \"modified\": {}}}');",
             "INSERT INTO entries VALUES ('{}', '{}', '{}', {});",
             entry.key,
             entry.hash,
             entry.path.to_str().unwrap(),
-            entry.modified.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+            entry
+                .modified
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
         );
 
         match self.glue.execute(query).await {
@@ -140,7 +143,7 @@ pub struct EntriesRow {
     pub key: String,
     pub path: String,
     pub hash: String,
-    pub modified: i64,
+    pub modified: u64,
 }
 
 impl TryFrom<HashMap<&str, &Value>> for EntriesRow {
@@ -160,10 +163,15 @@ impl TryFrom<HashMap<&str, &Value>> for EntriesRow {
             _ => return Err(anyhow!("`hash` expected to be Str")),
         };
         let modified = match *value.get("modified").unwrap() {
-            Value::I64(v) => *v,
-            _ => return Err(anyhow!("`modified` expected to be i64")),
+            Value::U64(v) => *v,
+            _ => return Err(anyhow!("`modified` expected to be u64")),
         };
-        Ok(EntriesRow { key, path, hash, modified })
+        Ok(EntriesRow {
+            key,
+            path,
+            hash,
+            modified,
+        })
     }
 }
 
