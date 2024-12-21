@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::anyhow;
 use clap::{arg, command, ArgAction, ArgMatches};
+use colored::Colorize;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
@@ -133,8 +134,8 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         None => Vec::new(),
     };
 
-    println!("exclude: {:?}", exclude);
-    println!("include: {:?}", include);
+    // println!("exclude: {:?}", exclude);
+    // println!("include: {:?}", include);
     if include.len() > 0 && exclude.len() > 0 {
         return Err(anyhow!("exclude and include flags are mutually exclusive"));
     }
@@ -189,11 +190,15 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
     let remote_entries = sql.get_entries().await?;
 
     let base_path = PathBuf::from("./").canonicalize().unwrap();
+    let warnings: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let prompt_list: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let prompt_entries: Mutex<Vec<PlanEntry>> = Mutex::new(Vec::new());
     let planned_entries: Mutex<Vec<PlanEntry>> =
         Mutex::new(Vec::with_capacity(filtered_entries.len()));
     let pb = indicatif::ProgressBar::new(filtered_entries.len() as u64);
     println!("Processing entries...");
     let num_skipped: AtomicU64 = AtomicU64::new(0);
+    let num_new: AtomicU64 = AtomicU64::new(0);
     filtered_entries.into_par_iter().for_each(|path| {
         let metadata = match std::fs::metadata(&path) {
             Ok(m) => m,
@@ -244,6 +249,7 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
             }
         });
         let mut skip = false;
+        let mut prompt = false;
         if let Some(remote) = modified_key {
             // different hash at same key, prompt
             let this_modified_time = modified
@@ -251,15 +257,27 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
                 .unwrap()
                 .as_secs();
             if remote.modified > this_modified_time {
-                println!("Key {} exists, remote is newer", &remote.key);
+                // println!("Key {} exists, remote is newer", &remote.key);
+                prompt_list
+                    .lock()
+                    .unwrap()
+                    .push(format!("{}, remote is newer", &remote.key));
+                prompt_entries.lock().unwrap().push(plan_entry.clone());
             } else if remote.modified < this_modified_time {
-                println!("Key {} exists, remote is older", &remote.key);
+                // println!("Key {} exists, remote is older", &remote.key);
+                prompt_list
+                    .lock()
+                    .unwrap()
+                    .push(format!("{} [remote is older]", &remote.key));
+                prompt_entries.lock().unwrap().push(plan_entry.clone());
             } else {
-                println!(
+                panic!(
                     "Key {} exists with different hash but timestamp is same; this may be a bug",
                     &remote.key
                 );
             }
+            prompt = true;
+            skip = true;
         }
         if existing_hashes
             .iter()
@@ -268,17 +286,29 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         {
             // key exists with same hash, skip
             // println!("Key {} exists with same hash", &this_key);
+            num_skipped.fetch_add(1, Ordering::Relaxed);
             skip = true;
+        }
+
+        if !skip && !prompt {
+            num_new.fetch_add(1, Ordering::Relaxed);
+        }
+
+        if !skip && existing_hashes.len() > 0 {
+            // not skipped but identical hashes found, flag
+            let mut warning = format!(
+                "Key {} does not exist but remote objects with identical hashes found:\n",
+                &this_key.bold().white()
+            );
+
+            for i in existing_hashes.iter().map(|e| &e.key).collect::<Vec<_>>() {
+                warning.push_str(&format!("    - {}\n", i.bold().white()));
+            }
+            warning.push('\n');
+            warnings.lock().unwrap().push(warning);
         }
         // TODO this is potentially an overwhelming number of warnings, which also needs to be deduped between entries
         //      could instead make this a separate command operating on the remote store
-        if !skip && existing_hashes.len() > 0 {
-            // not skipped but identical hashes found, flag
-            println!(
-                "Key {} does not exist but remote objects with identical hashes found: {:?}",
-                &this_key, existing_hashes
-            );
-        }
         // if skip && existing_hashes.len() > 1 {
         //     // skipped but there are multiple identical hashes, flag
         //     println!(
@@ -293,22 +323,59 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
 
         if !skip {
             planned_entries.lock().unwrap().push(plan_entry);
-        } else {
-            num_skipped.fetch_add(1, Ordering::Relaxed);
         }
 
         pb.inc(1);
     });
-    pb.finish_with_message("done");
-    println!(
-        "Skipped {} existing, umodified entries",
-        num_skipped.load(Ordering::Relaxed)
-    );
+    pb.finish();
 
-    let entries = planned_entries.into_inner().unwrap();
+    let prompt_list = prompt_list.into_inner().unwrap();
+    let ans = inquire::MultiSelect::new("Select conflicting objects to include", prompt_list)
+        .prompt()
+        .unwrap();
+    let selected_keys = ans
+        .iter()
+        .map(|i| i.split(" [").collect::<Vec<_>>()[0])
+        .collect::<Vec<_>>();
+    // println!("Selected {:?}", selected_keys);
+
+    let mut prompt_entries = prompt_entries
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .filter(|e| selected_keys.iter().find(|&s| *s == e.key).is_some())
+        .collect::<Vec<_>>();
+
+    let mut entries = planned_entries.into_inner().unwrap();
+    entries.append(&mut prompt_entries);
+
+    println!("\n{}", "Warnings:".yellow().bold());
+    for warning in warnings.into_inner().unwrap() {
+        println!(" - {}", warning);
+    }
+
+    let num_entries = entries.len() as u64;
+    let num_new = num_new.load(Ordering::Relaxed);
+    let num_skipped = num_skipped.load(Ordering::Relaxed);
+    let num_updated = num_entries - num_new;
+    if entries.len() > 0 {
+        println!(
+            "\n{}",
+            format!(
+                "Plan will upload {} objects: {} new, {} updated. Skipped {} identical entries.",
+                num_entries,
+                num_new,
+                num_updated,
+                num_skipped,
+            )
+            .green()
+        );
+    } else {
+        println!("\n{}", "Plan is empty; nothing to upload.".white());
+    }
 
     let plan = Plan { base_path, entries };
-    println!("plan={:?}", plan);
+    // println!("{:?}", plan);
     plan.write();
     // let plan_bytes = bincode::serialize(&plan).unwrap();
     // let fout = std::fs::File::create("./s3b_plan.bin").unwrap();
@@ -357,7 +424,7 @@ impl Plan {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PlanEntry {
     key: String,
     path: PathBuf,
