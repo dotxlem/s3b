@@ -2,17 +2,17 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use anyhow::anyhow;
-use gluesql::prelude::{Glue, SledStorage, Value};
+use gluesql::prelude::{Glue, JsonStorage, Value};
 
 use crate::PlanEntry;
 
 pub struct Sql {
-    glue: Glue<SledStorage>,
+    glue: Glue<JsonStorage>,
 }
 
 impl Sql {
     pub async fn new() -> anyhow::Result<Self> {
-        let storage = SledStorage::new("_s3b_db").map_err(|e| anyhow!(e))?;
+        let storage = JsonStorage::new("_s3b_db").map_err(|e| anyhow!(e))?;
         let mut glue = Glue::new(storage);
 
         let queries = r#"
@@ -62,6 +62,25 @@ impl Sql {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
+        );
+
+        match self.glue.execute(query).await {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow!(err)),
+        }
+    }
+
+    pub async fn update_entry(&mut self, entry: &PlanEntry) -> anyhow::Result<()> {
+        let query = format!(
+            "UPDATE entries SET hash='{}', path='{}', modified={} WHERE key='{}';",
+            entry.hash,
+            entry.path.to_str().unwrap(),
+            entry
+                .modified
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            entry.key,
         );
 
         match self.glue.execute(query).await {

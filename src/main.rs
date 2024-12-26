@@ -3,13 +3,12 @@ mod s3;
 mod sql;
 
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-use anyhow::anyhow;
-use clap::{arg, command, ArgAction, ArgMatches};
+use clap::{arg, command, ArgMatches};
 use colored::Colorize;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -21,11 +20,10 @@ use sql::{EntriesRow, Sql};
 #[tokio::main]
 async fn main() {
     let matches = command!()
-        .arg(arg!(--"bucket" <BUCKET>).required(true))
         .subcommand_required(true)
-        .subcommand(command!("init").arg(arg!(--"create").action(ArgAction::SetTrue)))
         .subcommand(
             command!("plan")
+                .arg(arg!(--"bucket" <BUCKET>).required(true))
                 .arg(
                     arg!(--"exclude" <EXCLUDE>)
                         .value_delimiter(' ')
@@ -40,89 +38,55 @@ async fn main() {
         .subcommand(command!("push"))
         .get_matches();
 
-    let bucket_name = matches.get_one::<String>("bucket").unwrap();
     if let Err(err) = match matches.subcommand() {
-        Some(("init", subcommand)) => init(subcommand, bucket_name).await,
-        Some(("plan", subcommand)) => plan(subcommand, bucket_name).await,
-        Some(("push", subcommand)) => push(subcommand, bucket_name).await,
+        Some(("plan", subcommand)) => plan(subcommand).await,
+        Some(("push", subcommand)) => push(subcommand).await,
         _ => unreachable!("skipper's drunk!"),
     } {
-        println!("ERROR: {:?}", err);
+        println!("{}", format!("ERROR: {:?}", err).red());
     }
 }
 
-async fn init(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> {
-    // init
-    //  Check bucket for DB file; if not present, create & upload
+async fn push(_matches: &ArgMatches) -> anyhow::Result<()> {
+    let plan = Plan::read();
+    let num_entries = plan.entries.len();
+    let bucket_name = plan.bucket_name;
 
-    // let bucket_name = matches.get_one::<String>("bucket").unwrap();
-    let create_infra = matches.get_flag("create");
-    println!("Bucket: {:?}", &bucket_name);
-    println!("Create: {:?}", create_infra);
+    println!("Pushing {} objects to bucket {}...", num_entries, &bucket_name);
 
+    // TODO check for lock
+    //      lock should be its own operation, i.e. s3b lock & s3b lock --release
     let s3 = S3::new(&bucket_name).await?;
-
-    // does bucket have db?
-    //  if so, pull it
-    let exists = s3.key_exists("_s3b_db/db").await?;
-    println!("key_exists: {:?}", exists);
+    let exists = s3.key_exists("_s3b_db/entries.sql").await?;
     if exists {
         s3.get("_s3b_db/").await?;
     }
 
-    // let mut sql = Sql::new();
-    // sql.init().await?;
-    // if !exists {
-    //     s3.put(Path::new("_s3b_db")).await?;
-    // }
-
-    // sql.add_origin("xlemovo").await?;
-    // sql.add_origin("xlemstation").await?;
-    // sql.get_origins()
-    //     .await?
-    //     .iter()
-    //     .for_each(|h| println!("hostname={:?}", h.hostname));
-
-    // does lock table exist?
-    //   if not, create it?
-    //     if not created then exit
-    // let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
-    // let config = aws_config::from_env().region(region_provider).load().await;
-    // let ddb = aws_sdk_dynamodb::Client::new(&config);
-    // let paginator = ddb.list_tables().into_paginator().items().send();
-    // let tables = paginator.collect::<Result<Vec<_>, _>>().await?;
-    // for name in &tables {
-    //     println!("table: {}", name);
-    // }
-
-    Ok(())
-}
-
-async fn push(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> {
-    // TODO a lot of this will be handled by plan instead
-
-    // push
-    //  Fetch DB file and lock bucket
-    //  Check uplist against DB for duplicates
-    //  Iterate over uplist and hash with blake3 as upped; write to local DB file as upped.
-    //  Upload DB file after list is complete
-
-    // let fin = std::fs::File::open("./s3b_plan.bin").unwrap();
-    // let mut decompressor = brotli::Decompressor::new(fin, 4096);
-    // let mut buf: Vec<u8> = Vec::new();
-    // decompressor.read_to_end(&mut buf).unwrap();
-    // let plan: Plan = bincode::deserialize(&buf).unwrap();
-    let plan = Plan::read();
     let mut sql = Sql::new().await?;
+    let remote_entries = sql.get_entries().await?;
+    let pb = indicatif::ProgressBar::new(num_entries as u64);
     for entry in &plan.entries {
-        sql.put_entry(entry).await?;
+        s3.put(Path::new(&entry.key)).await?;
+        match remote_entries.iter().find(|&e| e.key == entry.key) {
+            Some(_) => sql.update_entry(entry).await?,
+            None => sql.put_entry(entry).await?,
+        };
+        pb.inc(1);
     }
-    println!("{:?}", plan);
+    pb.finish();
+    println!("{}", format!("Done! Uploaded {} objects.", num_entries).green());
+
+    s3.put(Path::new("_s3b_db/")).await?;
+    std::fs::remove_dir_all("_s3b_db").unwrap();
+    std::fs::remove_file("s3b_plan.bin").unwrap();
+
     Ok(())
 }
 
-async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> {
+async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
     use rayon::prelude::*;
+
+    let bucket_name = matches.get_one::<String>("bucket").unwrap();
 
     let exclude: Vec<&String> = match matches.get_many("exclude") {
         Some(m) => m.collect(),
@@ -134,12 +98,6 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         None => Vec::new(),
     };
 
-    // println!("exclude: {:?}", exclude);
-    // println!("include: {:?}", include);
-    if include.len() > 0 && exclude.len() > 0 {
-        return Err(anyhow!("exclude and include flags are mutually exclusive"));
-    }
-
     let spinner = indicatif::ProgressBar::new_spinner();
     spinner.enable_steady_tick(Duration::from_millis(120));
     spinner.set_message("Finding files...");
@@ -148,23 +106,20 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         let entry = entry.unwrap();
         let entry = entry.path().canonicalize().unwrap();
         if entry.is_file() && !entry.is_symlink() {
-            if exclude.len() > 0 {
-                if !filter(exclude.clone(), entry.clone()) {
-                    filtered_entries.push(entry);
-                }
-                continue;
-            }
             if include.len() > 0 {
                 if filter(include.clone(), entry.clone()) {
                     filtered_entries.push(entry);
-                    continue;
+                    // continue;
                 }
-            }
-            if include.len() == 0 && exclude.len() == 0 {
+            } else {
                 filtered_entries.push(entry);
             }
         }
     }
+    let filtered_entries: Vec<PathBuf> = filtered_entries
+        .into_iter()
+        .filter(|path| !filter(exclude.clone(), path.clone()))
+        .collect();
     let filtered_entries: Vec<PathBuf> = filtered_entries
         .into_iter()
         .unique()
@@ -177,18 +132,19 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         .collect();
     spinner.finish_with_message(format!("Found {} entries", filtered_entries.len()));
 
-    // TODO check for lock, lock bucket
+    // TODO check for lock
     //      lock should be its own operation, i.e. s3b lock & s3b lock --release
-    // let s3 = S3::new(&bucket_name).await?;
-    // let exists = s3.key_exists("_s3b_db/db").await?;
-    // println!("key_exists: {:?}", exists);
-    // if exists {
-    //     s3.get("_s3b_db/").await?;
-    // }
+    let s3 = S3::new(&bucket_name).await?;
+    let exists = s3.key_exists("_s3b_db/entries.sql").await?;
+    if exists {
+        s3.get("_s3b_db/").await?;
+    }
 
     let mut sql = Sql::new().await?;
     let remote_entries = sql.get_entries().await?;
+    // println!("remote={:?}", remote_entries);
 
+    println!("Processing entries...");
     let base_path = PathBuf::from("./").canonicalize().unwrap();
     let warnings: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let prompt_list: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -196,7 +152,6 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
     let planned_entries: Mutex<Vec<PlanEntry>> =
         Mutex::new(Vec::with_capacity(filtered_entries.len()));
     let pb = indicatif::ProgressBar::new(filtered_entries.len() as u64);
-    println!("Processing entries...");
     let num_skipped: AtomicU64 = AtomicU64::new(0);
     let num_new: AtomicU64 = AtomicU64::new(0);
     filtered_entries.into_par_iter().for_each(|path| {
@@ -217,24 +172,6 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
             hash: hash.clone(),
             modified,
         };
-        // println!("key={}, hash={}", key.clone(), hash.clone());
-
-        // if plan_entries.lock().unwrap().iter().find(|e| e.key == plan_entry.key).is_some() {
-        //     println!("dupe={:?}", &plan_entry.key);
-        // }
-        // TODO how much checking against the DB does `plan` do?
-        //      - identical hash & key should be skipped
-        //      - identical hash at different keys should be highlighted
-        //      - different hash at same key should be prompted for options, check modified time
-        // TODO how are identical keys from multiple base paths (origins) handled?
-        //      - emergent from above; prompt if different hash should show base path & modified time
-        //      - opting to keep both should append the base path somehow to the key? or is keeping both not possible?
-        //          - if not possible, options are skip or overwrite
-        // if let None = remote_entries.iter().find(|&e| e.hash.eq(&hash.clone()) && e.key.eq(&key.clone())) {
-        //     planned_entries.lock().unwrap().push(plan_entry);
-        // } else {
-        //     num_skipped.fetch_add(1, Ordering::Relaxed);
-        // }
 
         let mut modified_key: Option<&EntriesRow> = None;
         let mut existing_hashes: Vec<&EntriesRow> = Vec::new();
@@ -261,7 +198,7 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
                 prompt_list
                     .lock()
                     .unwrap()
-                    .push(format!("{}, remote is newer", &remote.key));
+                    .push(format!("{} [remote is newer]", &remote.key));
                 prompt_entries.lock().unwrap().push(plan_entry.clone());
             } else if remote.modified < this_modified_time {
                 // println!("Key {} exists, remote is older", &remote.key);
@@ -297,7 +234,7 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         if !skip && existing_hashes.len() > 0 {
             // not skipped but identical hashes found, flag
             let mut warning = format!(
-                "Key {} does not exist but remote objects with identical hashes found:\n",
+                "Identical hashes found for new object {} at keys:\n",
                 &this_key.bold().white()
             );
 
@@ -309,9 +246,9 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         }
         // TODO this is potentially an overwhelming number of warnings, which also needs to be deduped between entries
         //      could instead make this a separate command operating on the remote store
-        // if skip && existing_hashes.len() > 1 {
+        // if skip && !prompt && existing_hashes.len() > 1 {
         //     // skipped but there are multiple identical hashes, flag
-        //     println!(
+        //     let mut warning = format!(
         //         "Key {} skipped but remote objects with identical hashes found: {:?}",
         //         &this_key,
         //         existing_hashes
@@ -319,6 +256,8 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         //             .filter(|e| e.key != this_key)
         //             .collect::<Vec<_>>()
         //     );
+        //     warning.push('\n');
+        //     warnings.lock().unwrap().push(warning);
         // }
 
         if !skip {
@@ -328,26 +267,26 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
         pb.inc(1);
     });
     pb.finish();
+    let mut entries = planned_entries.into_inner().unwrap();
 
     let prompt_list = prompt_list.into_inner().unwrap();
-    let ans = inquire::MultiSelect::new("Select conflicting objects to include", prompt_list)
-        .prompt()
-        .unwrap();
-    let selected_keys = ans
-        .iter()
-        .map(|i| i.split(" [").collect::<Vec<_>>()[0])
-        .collect::<Vec<_>>();
-    // println!("Selected {:?}", selected_keys);
-
-    let mut prompt_entries = prompt_entries
-        .into_inner()
-        .unwrap()
-        .into_iter()
-        .filter(|e| selected_keys.iter().find(|&s| *s == e.key).is_some())
-        .collect::<Vec<_>>();
-
-    let mut entries = planned_entries.into_inner().unwrap();
-    entries.append(&mut prompt_entries);
+    if prompt_list.len() > 0 {
+        let ans = inquire::MultiSelect::new("Select conflicting objects to include", prompt_list)
+            .prompt()
+            .unwrap();
+        let selected_keys = ans
+            .iter()
+            .map(|i| i.split(" [").collect::<Vec<_>>()[0])
+            .collect::<Vec<_>>();
+        let mut prompt_entries = prompt_entries
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .filter(|e| selected_keys.iter().find(|&s| *s == e.key).is_some())
+            .collect::<Vec<_>>();
+        entries.append(&mut prompt_entries);
+        // println!("Selected {:?}", selected_keys);
+    }
 
     println!("\n{}", "Warnings:".yellow().bold());
     for warning in warnings.into_inner().unwrap() {
@@ -363,24 +302,18 @@ async fn plan(matches: &ArgMatches, bucket_name: &String) -> anyhow::Result<()> 
             "\n{}",
             format!(
                 "Plan will upload {} objects: {} new, {} updated. Skipped {} identical entries.",
-                num_entries,
-                num_new,
-                num_updated,
-                num_skipped,
+                num_entries, num_new, num_updated, num_skipped,
             )
             .green()
         );
     } else {
-        println!("\n{}", "Plan is empty; nothing to upload.".white());
+        println!("\n{}", "Plan is empty; nothing new to upload.".white());
     }
 
-    let plan = Plan { base_path, entries };
+    let plan = Plan { bucket_name: bucket_name.to_string(), base_path, entries };
     // println!("{:?}", plan);
     plan.write();
-    // let plan_bytes = bincode::serialize(&plan).unwrap();
-    // let fout = std::fs::File::create("./s3b_plan.bin").unwrap();
-    // let mut compressor = brotli::CompressorWriter::new(fout, 4096, 11, 22);
-    // compressor.write_all(&plan_bytes).unwrap();
+    std::fs::remove_dir_all("_s3b_db").unwrap();
 
     Ok(())
 }
@@ -390,19 +323,13 @@ fn filter(list: Vec<&String>, entry: PathBuf) -> bool {
         if entry.to_str().unwrap().contains(l.as_str()) {
             return true;
         }
-        // if entry
-        //     .components()
-        //     .find(|&c| c.as_os_str().to_str().unwrap() == l.as_str())
-        //     .is_some()
-        // {
-        //     return true;
-        // }
     }
     return false;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Plan {
+    bucket_name: String,
     base_path: PathBuf,
     entries: Vec<PlanEntry>, // TODO this might be more efficient as a map
 }

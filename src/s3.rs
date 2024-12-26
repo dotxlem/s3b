@@ -84,7 +84,6 @@ impl S3 {
             let mut list_stream = self.client.list(Some(&ObjectPath::from(key)));
             while let Some(meta) = list_stream.next().await.transpose().unwrap() {
                 if meta.size != 0 {
-                    println!("Name: {}, size: {}", meta.location, meta.size);
                     self.get_one(meta.location.to_string().as_str()).await?
                 }
             }

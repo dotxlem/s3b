@@ -14,7 +14,7 @@ brotli = "7.0"
 clap = { version = "4.5", features = ["cargo"] }
 colored = "2.2"
 futures = "0.3"
-gluesql = { version = "0.16", features = ["gluesql_sled_storage"] }
+gluesql = { version = "0.16" }
 indicatif = "0.17"
 inquire = "0.7"
 itertools = "0.13"
