@@ -12,12 +12,17 @@ use serde::{Deserialize, Serialize};
 use s3::S3;
 use sql::Sql;
 
-use commands::{info::info, plan::plan, push::push};
+use commands::{find::find, info::info, plan::plan, push::push};
 
 #[tokio::main]
 async fn main() {
     let matches = command!()
         .subcommand_required(true)
+        .subcommand(
+            command!("find")
+                .arg(arg!(--"bucket" <BUCKET>).required(true))
+                .arg(arg!(--"where" <QUERY>).required(true)),
+        )
         .subcommand(
             command!("info")
                 .arg(arg!(--"bucket" <BUCKET>).required(true))
@@ -41,6 +46,7 @@ async fn main() {
         .get_matches();
 
     if let Err(err) = match matches.subcommand() {
+        Some(("find", subcommand)) => find(subcommand).await,
         Some(("info", subcommand)) => info(subcommand).await,
         Some(("plan", subcommand)) => plan(subcommand).await,
         Some(("push", subcommand)) => push(subcommand).await,

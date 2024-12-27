@@ -99,8 +99,10 @@ pub async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
         );
         let dt_utc = DateTime::<Utc>::from(dt);
         let timestamp = dt_utc.timestamp() as u64;
+        
         let contents = std::fs::read(&path).unwrap();
         let hash = blake3::hash(&contents).to_string();
+
         let key = path
             .to_str()
             .unwrap()

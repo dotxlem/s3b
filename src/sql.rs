@@ -30,7 +30,13 @@ impl Sql {
     }
 
     pub async fn get_entries_by_hash(&mut self, hash: &str) -> anyhow::Result<Vec<EntriesRow>> {
-        let query = format!("SELECT * FROM entries WHERE hash='{}'", hash);
+        let query = format!("SELECT * FROM entries WHERE hash='{}';", hash);
+        self.select_entries(&query).await
+    }
+
+    pub async fn get_entries_where(&mut self, wherestr: &str) -> anyhow::Result<Vec<EntriesRow>> {
+        let query = format!("SELECT * FROM entries WHERE {};", wherestr);
+        println!("query={}", query);
         self.select_entries(&query).await
     }
 
@@ -81,7 +87,6 @@ impl Sql {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct EntriesRow {
     pub key: String,
