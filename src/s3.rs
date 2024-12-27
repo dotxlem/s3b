@@ -11,7 +11,7 @@ use futures::StreamExt;
 use object_store::{
     aws::{AmazonS3, AmazonS3Builder},
     path::Path as ObjectPath,
-    Error, ObjectStore, PutPayload,
+    Error, ObjectStore, PutPayload, WriteMultipart,
 };
 use walkdir::WalkDir;
 
@@ -100,14 +100,42 @@ impl S3 {
             return Err(anyhow!("{:?} is not a file", path));
         }
 
-        let bytes = read_file_to_bytes(path)?;
-        let payload = PutPayload::from_bytes(bytes.into());
-        if let Err(err) = self
-            .client
-            .put(&ObjectPath::from(path.to_str().unwrap()), payload)
-            .await
-        {
-            return Err(err.into());
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_err) => panic!("could not stat {:?}", &path),
+        };
+        let part_size = 50_000_000u64;
+
+        if metadata.len() <= part_size {
+            let bytes = read_file_to_bytes(path)?;
+            let payload = PutPayload::from_bytes(bytes.into());
+            if let Err(err) = self
+                .client
+                .put(&ObjectPath::from(path.to_str().unwrap()), payload)
+                .await
+            {
+                return Err(err.into());
+            }
+        } else {
+            let upload = self
+                .client
+                .put_multipart(&ObjectPath::from(path.to_str().unwrap()))
+                .await
+                .unwrap();
+            let mut writer = WriteMultipart::new(upload);
+            match File::open(path) {
+                Ok(mut file) => {
+                    for i in 0u64..(metadata.len() as f32 / part_size as f32).ceil() as u64 {
+                        let num_bytes = std::cmp::min(part_size, metadata.len() - (i * part_size));
+                        let mut buf = Vec::new();
+                        buf.resize(num_bytes as usize, 0);
+                        file.read_exact(&mut buf).unwrap();
+                        writer.write(&buf);
+                    }
+                    writer.finish().await.unwrap();
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
 
         Ok(())
