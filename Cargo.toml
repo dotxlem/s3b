@@ -11,7 +11,9 @@ aws-sdk-dynamodb = { version = "1.42", features = ["rt-tokio"] }
 bincode = "1.3"
 blake3 = { version = "1.5", features = ["rayon"] }
 brotli = "7.0"
+chrono = "0.4"
 clap = { version = "4.5", features = ["cargo"] }
+cli-table = "0.4"
 colored = "2.2"
 futures = "0.3"
 gluesql = { version = "0.16" }

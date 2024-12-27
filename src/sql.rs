@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use anyhow::anyhow;
 use gluesql::prelude::{Glue, JsonStorage, Value};
@@ -41,11 +40,7 @@ impl Sql {
             entry.key,
             entry.hash,
             entry.path.to_str().unwrap(),
-            entry
-                .modified
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            entry.modified,
         );
 
         match self.glue.execute(query).await {
@@ -59,11 +54,7 @@ impl Sql {
             "UPDATE entries SET hash='{}', path='{}', modified={} WHERE key='{}';",
             entry.hash,
             entry.path.to_str().unwrap(),
-            entry
-                .modified
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            entry.modified,
             entry.key,
         );
 
