@@ -23,6 +23,14 @@ Arguments:
 Notes:  
 Include & exclude filters match if the filter string is found in the path. For example passing `--exclude .git` will exclude any file paths containing `.git`. To narrow the filter, `--exclude path/to/project/.git` would exclude files in a specific .git directory.
 
+Examples:  
+- Include `Projects/` directory and exclude common build & artifact directories  
+  `s3b plan --bucket my-bucket --include Projects --exclude target build node_modules`
+- Suppose a directory named `Go/` exists in the current directory and in the `Projects/` directory  
+  `s3b plan --bucket my-bucket --include Go` will include both `Go/` and `Projects/Go/`  
+  `s3b plan --bucket my-bucket --include Go --exclude Projects/Go` will include only `Go/`  
+  `s3b plan --bucket my-bucket --include Projects/Go` will include only `Projects/Go`  
+
 ### push
 `s3b push` 
 
@@ -42,10 +50,14 @@ Arguments:
 
 Run an SQL SELECT query against the embedded database in the given bucket, using the specified WHERE clause.
 
+Arguments:  
+`bucket` [REQUIRED]: the name of an existing S3 bucket  
+`where` [REQUIRED]: the WHERE clause to pass to the SELECT query; should be in double-quotes  
+
 Examples: 
-- Find all uploaded objects where the origin path starts with `/home/xlem`: 
+- Find all uploaded objects where the origin path starts with `/home/xlem`:  
   `s3b find --bucket my-bucket --where "path LIKE '/home/xlem%'"`
-- Find all uploaded object where the hash is "06556521595c9d9f8a5865de2a37c2a3f5d89481c20213dfd24c120c7e84a4cb" 
+- Find all uploaded object where the hash is "06556521595c9d9f8a5865de2a37c2a3f5d89481c20213dfd24c120c7e84a4cb":  
   `s3b find --bucket my-bucket --where "hash='06556521595c9d9f8a5865de2a37c2a3f5d89481c20213dfd24c120c7e84a4cb'"` 
 
 Notes:  
