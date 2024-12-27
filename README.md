@@ -2,11 +2,40 @@
 
 s3b (pronounced "seb") is a command line tool for uploading data to Amazon S3, backed by an embedded database ([GlueSQL](https://gluesql.org/docs)).
 
-The s3b workflow is inspired in part by the [Terraform](https://terraform.io) CLI. The main commands are `plan`, which builds a changeset of files which will be uploaded, and `push` (analogous to `terraform apply`) which will execute the plan.
+The s3b workflow is inspired in part by the [Terraform](https://terraform.io) CLI. The main commands are `plan`, which 
+builds a changeset of files which will be uploaded, and `push` (analogous to `terraform apply`) which will execute the plan.
 
-The embedded database is stored as JSON in the target bucket, and is used to track the BLAKE3 hash, origin path, and modified timestamp of each object. This database is queried to determine whether an object can be skipped before uploading, and can also be queried to determine (among other things) if duplicate objects are stored at multiple keys.
+The embedded database is stored as JSON in the target bucket, and is used to track the BLAKE3 hash, origin path, and modified 
+timestamp of each object. This database is queried to determine whether an object can be skipped before uploading, and can 
+also be queried to determine (among other things) if duplicate objects are stored at multiple keys.
 
 The bucket key of uploaded files are relative to the directory from which the s3b plan is generated.
+
+## Use Cases
+
+I wrote this to facilitate backing up and consolidating files from multiple sources (machines or disks) which have similar directory stucture. 
+For example I have several disks for my Plex media server, each with directories like `Media/TV` or `Media/Movies`. Due to some carelessness 
+on my part, some disks have duplicates at the same relative locations, or in some cases there are dupes in slightly different subdirectories. 
+I want to back all of this up to S3, automatically skipping files which have identical content at the same relative locations and allow me to 
+easily (and cheaply) find identical files at differing locations. I have a similar story with my `~/Development` directory across different 
+machines, from lazily copying the directory around after wiping a machine.
+
+That said, s3b may be useful to you in any scenario where you want to archive data to an S3 bucket and query the bucket contents with an 
+SQL query (see `s3b find` below).
+
+## Caveats
+
+- Currently there is no built-in locking mechanism to prevent bucket writes from simultaneous instances of s3b; if you are automating s3b 
+  it is up to you to make sure you are only writing from one machine at a time!
+- It is assumed that all content in your target bucket is managed by s3b; modifying objects outside of s3b will not be reflected in the 
+  database and may cause inconsistency.
+
+## Installation
+
+Installation currently requires cargo; install with
+```bash
+cargo install s3b
+```
 
 ## Commands
 

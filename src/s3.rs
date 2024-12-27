@@ -125,7 +125,7 @@ impl S3 {
             let mut writer = WriteMultipart::new(upload);
             match File::open(path) {
                 Ok(mut file) => {
-                    for i in 0u64..(metadata.len() as f32 / part_size as f32).ceil() as u64 {
+                    for i in 0u64..(metadata.len() as f64 / part_size as f64).ceil() as u64 {
                         let num_bytes = std::cmp::min(part_size, metadata.len() - (i * part_size));
                         let mut buf = Vec::new();
                         buf.resize(num_bytes as usize, 0);
