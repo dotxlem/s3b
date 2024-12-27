@@ -50,7 +50,8 @@ Arguments:
 `exclude` [OPTIONAL]: a space-separated list of path filters to exclude from the plan  
 
 Notes:  
-Include & exclude filters match if the filter string is found in the path. For example passing `--exclude .git` will exclude any file paths containing `.git`. To narrow the filter, `--exclude path/to/project/.git` would exclude files in a specific .git directory.
+Include & exclude filters match if the filter string is found in the path. For example passing `--exclude .git` will exclude any file paths containing `.git`. 
+To narrow the filter, `--exclude path/to/project/.git` would exclude files in a specific .git directory.
 
 Examples:  
 - Include `Projects/` directory and exclude common build & artifact directories  
