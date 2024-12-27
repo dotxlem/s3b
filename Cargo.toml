@@ -5,6 +5,7 @@ edition = "2021"
 repository = "https://github.com/dotxlem/s3b"
 license = "MIT"
 authors = ["Dan Cook <xlem@akkoro.io>"]
+description = "A command line tool for uploading data to Amazon S3, backed by an embedded database."
 
 [dependencies]
 anyhow = "1"
