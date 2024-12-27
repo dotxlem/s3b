@@ -2,6 +2,9 @@
 name = "s3b"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/dotxlem/s3b"
+license = "MIT"
+authors = ["Dan Cook <xlem@akkoro.io>"]
 
 [dependencies]
 anyhow = "1"
