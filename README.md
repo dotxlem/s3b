@@ -13,7 +13,7 @@ The bucket key of uploaded files are relative to the directory from which the s3
 ### plan
 `s3b plan --bucket <BUCKET> --include <LIST> --exclude <LIST>` 
 
-Generates a plan file against the specified bucket for files in the current directory.
+Generates a plan file against the specified bucket for files in the current directory. Warnings will be shown for any existing objects having the same hash as a new file in the plan.
 
 Arguments:  
 `bucket` [REQUIRED]: the name of an existing S3 bucket  
@@ -26,6 +26,8 @@ Include & exclude filters match if the filter string is found in the path. For e
 Examples:  
 - Include `Projects/` directory and exclude common build & artifact directories  
   `s3b plan --bucket my-bucket --include Projects --exclude target build node_modules`
+- Include everything except for .DS_Store files  
+  `s3b plan --bucket my-bucket --exclude .DS_Store`  
 - Suppose a directory named `Go/` exists in the current directory and in the `Projects/` directory  
   `s3b plan --bucket my-bucket --include Go` will include both `Go/` and `Projects/Go/`  
   `s3b plan --bucket my-bucket --include Go --exclude Projects/Go` will include only `Go/`  
