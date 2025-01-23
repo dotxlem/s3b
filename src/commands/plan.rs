@@ -16,6 +16,7 @@ use crate::{sql::EntriesRow, Plan, PlanEntry, Sql, S3};
 
 pub async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
     let bucket_name = matches.get_one::<String>("bucket").unwrap();
+    let endpoint = matches.get_one::<String>("endpoint");
 
     let exclude: Vec<&String> = match matches.get_many("exclude") {
         Some(m) => m.collect(),
@@ -62,7 +63,7 @@ pub async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
 
     // TODO check for lock
     //      lock should be its own operation, i.e. s3b lock & s3b lock --release
-    let s3 = S3::new(&bucket_name).await?;
+    let s3 = S3::new(&bucket_name, endpoint.map(|s| s.as_str())).await?;
     let exists = s3.key_exists("_s3b_db/entries.sql").await?;
     if exists {
         s3.get("_s3b_db/").await?;
@@ -99,7 +100,7 @@ pub async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
         );
         let dt_utc = DateTime::<Utc>::from(dt);
         let timestamp = dt_utc.timestamp() as u64;
-        
+
         let contents = std::fs::read(&path).unwrap();
         let hash = blake3::hash(&contents).to_string();
 
@@ -107,7 +108,7 @@ pub async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
             .to_str()
             .unwrap()
             .replace(&format!("{}/", base_path.to_str().unwrap()), "");
-        
+
         let plan_entry = PlanEntry {
             key: key.clone(),
             path,

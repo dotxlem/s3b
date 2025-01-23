@@ -20,7 +20,7 @@ pub struct S3 {
 }
 
 impl S3 {
-    pub async fn new(bucket_name: &str) -> anyhow::Result<Self> {
+    pub async fn new(bucket_name: &str, endpoint: Option<&str>) -> anyhow::Result<Self> {
         let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
         let config = aws_config::from_env().region(region_provider).load().await;
         let creds = config
@@ -30,7 +30,7 @@ impl S3 {
             .await
             .unwrap();
 
-        match AmazonS3Builder::new()
+        let mut builder = AmazonS3Builder::new()
             .with_access_key_id(creds.access_key_id())
             .with_secret_access_key(creds.secret_access_key())
             .with_region(
@@ -39,9 +39,13 @@ impl S3 {
                     .expect("expected aws region to be set")
                     .as_ref(),
             )
-            .with_bucket_name(bucket_name)
-            .build()
-        {
+            .with_bucket_name(bucket_name);
+
+        if let Some(ep) = endpoint {
+            builder = builder.with_endpoint(ep);
+        }
+
+        match builder.build() {
             Ok(client) => Ok(Self { client }),
             Err(err) => Err(err.into()),
         }
@@ -83,14 +87,29 @@ impl S3 {
         if last_char == "/" {
             let mut list_stream = self.client.list(Some(&ObjectPath::from(key)));
             while let Some(meta) = list_stream.next().await.transpose().unwrap() {
-                if meta.size != 0 {
-                    self.get_one(meta.location.to_string().as_str()).await?
-                }
+                self.get_one(meta.location.to_string().as_str()).await?
             }
         } else {
             self.get_one(key).await?
         }
         Ok(())
+    }
+
+    pub async fn delete(&self, path: &str) -> anyhow::Result<Vec<String>> {
+        let mut deleted: Vec<String> = Vec::new();
+        let last_char = path.get(path.len() - 1..path.len()).unwrap();
+        if last_char == "/" {
+            let mut list_stream = self.client.list(Some(&ObjectPath::from(path)));
+            while let Some(meta) = list_stream.next().await.transpose().unwrap() {
+                self.delete_one(meta.location.to_string().as_str()).await?;
+                deleted.push(meta.location.to_string());
+            }
+        } else {
+            self.delete_one(path).await?;
+            deleted.push(path.into());
+        }
+
+        Ok(deleted)
     }
 }
 
@@ -148,6 +167,14 @@ impl S3 {
             }
             Err(err) => Err(err.into()),
         }
+    }
+
+    async fn delete_one(&self, key: &str) -> anyhow::Result<()> {
+        if let Err(err) = self.client.delete(&ObjectPath::from(key)).await {
+            return Err(err.into())
+        }
+
+        Ok(())
     }
 }
 

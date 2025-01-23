@@ -36,7 +36,6 @@ impl Sql {
 
     pub async fn get_entries_where(&mut self, wherestr: &str) -> anyhow::Result<Vec<EntriesRow>> {
         let query = format!("SELECT * FROM entries WHERE {};", wherestr);
-        println!("query={}", query);
         self.select_entries(&query).await
     }
 
@@ -69,7 +68,15 @@ impl Sql {
             Err(err) => Err(anyhow!(err)),
         }
     }
- }
+
+    pub async fn delete_entry_by_key(&mut self, key: &str) -> anyhow::Result<()> {
+        let query = format!("DELETE FROM entries WHERE key='{}';", key);
+        match self.glue.execute(query).await {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow!(err)),
+        }
+    }
+}
 
 impl Sql {
     pub async fn select_entries(&mut self, query: &str) -> anyhow::Result<Vec<EntriesRow>> {

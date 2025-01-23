@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use s3::S3;
 use sql::Sql;
 
-use commands::{find::find, info::info, plan::plan, push::push};
+use commands::{drop::drop, find::find, info::info, plan::plan, push::push};
 
 #[tokio::main]
 async fn main() {
@@ -20,17 +20,23 @@ async fn main() {
         .subcommand_required(true)
         .subcommand(
             command!("find")
+                .about("Run an SQL SELECT query against the embedded database in the given bucket, using the specified WHERE clause")
                 .arg(arg!(--"bucket" <BUCKET>).required(true))
-                .arg(arg!(--"where" <QUERY>).required(true)),
+                .arg(arg!(--"where" <QUERY>).required(true))
+                .arg(arg!(--"endpoint" <ENDPOINT>).required(false)),
         )
         .subcommand(
             command!("info")
+                .about("Print information such as hash and origin path for the given key")
                 .arg(arg!(--"bucket" <BUCKET>).required(true))
-                .arg(arg!(--"key" <KEY>).required(true)),
+                .arg(arg!(--"key" <KEY>).required(true))
+                .arg(arg!(--"endpoint" <ENDPOINT>).required(false)),
         )
         .subcommand(
             command!("plan")
+                .about("Generates a plan file against the specified bucket for files in the current directory. Warnings will be shown for any existing objects having the same hash as a new file in the plan")
                 .arg(arg!(--"bucket" <BUCKET>).required(true))
+                .arg(arg!(--"endpoint" <ENDPOINT>).required(false))
                 .arg(
                     arg!(--"exclude" <EXCLUDE>)
                         .value_delimiter(' ')
@@ -42,10 +48,22 @@ async fn main() {
                         .num_args(1..),
                 ),
         )
-        .subcommand(command!("push"))
+        .subcommand(
+            command!("push")
+            .about("If there is an s3b_plan.bin in the current directory, execute the plan and push any listed files to the bucket specified in the plan")
+            .arg(arg!(--"endpoint" <ENDPOINT>).required(false))
+        )
+        .subcommand(
+            command!("drop")
+            .about("Delete remote object(s) at the specified path. Deletes all objects under prefix if path has a trailing slash (/)")
+            .arg(arg!(--"bucket" <BUCKET>).required(true))
+            .arg(arg!(--"path" <PATH>).required(true))
+            .arg(arg!(--"endpoint" <ENDPOINT>).required(false))
+        )
         .get_matches();
 
     if let Err(err) = match matches.subcommand() {
+        Some(("drop", subcommand)) => drop(subcommand).await,
         Some(("find", subcommand)) => find(subcommand).await,
         Some(("info", subcommand)) => info(subcommand).await,
         Some(("plan", subcommand)) => plan(subcommand).await,
@@ -55,8 +73,6 @@ async fn main() {
         println!("{}", format!("ERROR: {:?}", err).red());
     }
 }
-
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Plan {

@@ -8,11 +8,12 @@ use crate::{Sql, S3};
 
 pub async fn info(matches: &ArgMatches) -> anyhow::Result<()> {
     let bucket_name = matches.get_one::<String>("bucket").unwrap();
+    let endpoint = matches.get_one::<String>("endpoint");
     let key = matches.get_one::<String>("key").unwrap();
 
     // TODO check for lock
     //      lock should be its own operation, i.e. s3b lock & s3b lock --release
-    let s3 = S3::new(&bucket_name).await?;
+    let s3 = S3::new(&bucket_name, endpoint.map(|s| s.as_str())).await?;
     let exists = s3.key_exists("_s3b_db/entries.sql").await?;
     if exists {
         s3.get("_s3b_db/").await?;

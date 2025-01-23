@@ -45,9 +45,10 @@ cargo install s3b
 Generates a plan file against the specified bucket for files in the current directory. Warnings will be shown for any existing objects having the same hash as a new file in the plan.
 
 Arguments:  
-`bucket` [REQUIRED]: the name of an existing S3 bucket  
-`include` [OPTIONAL]: a space-separated list of path filters to include in the plan  
-`exclude` [OPTIONAL]: a space-separated list of path filters to exclude from the plan  
+`bucket`   [REQUIRED]: the name of an existing S3 bucket  
+`endpoint` [OPTIONAL]: the endpoint of the S3-compatible service  
+`include`  [OPTIONAL]: a space-separated list of path filters to include in the plan  
+`exclude`  [OPTIONAL]: a space-separated list of path filters to exclude from the plan  
 
 Notes:  
 Include & exclude filters match if the filter string is found in the path. For example passing `--exclude .git` will exclude any file paths containing `.git`. 
@@ -66,7 +67,10 @@ Examples:
 ### push
 `s3b push` 
 
-Push takes no arguments; if there is an `s3b_plan.bin` in the current directory it will execute the plan and push any listed files to the bucket specified in the plan.
+Arguments:  
+`endpoint` [OPTIONAL]: the endpoint of the S3-compatible service  
+
+If there is an `s3b_plan.bin` in the current directory it will execute the plan and push any listed files to the bucket specified in the plan.
 
 ### info
 `s3b info --bucket <BUCKET> --key <KEY>` 
@@ -74,8 +78,9 @@ Push takes no arguments; if there is an `s3b_plan.bin` in the current directory 
 Print information such as hash and origin path for the given key. 
 
 Arguments:  
-`bucket` [REQUIRED]: the name of an existing S3 bucket  
-`key` [REQUIRED]: the name of an existing object in the bucket
+`bucket`   [REQUIRED]: the name of an existing S3 bucket  
+`key`      [REQUIRED]: the name of an existing object in the bucket
+`endpoint` [OPTIONAL]: the endpoint of the S3-compatible service  
 
 ### find
 `s3b find --bucket <BUCKET> --where <WHERE CLAUSE>` 
@@ -83,8 +88,9 @@ Arguments:
 Run an SQL SELECT query against the embedded database in the given bucket, using the specified WHERE clause.
 
 Arguments:  
-`bucket` [REQUIRED]: the name of an existing S3 bucket  
-`where` [REQUIRED]: the WHERE clause to pass to the SELECT query; should be in double-quotes  
+`bucket`   [REQUIRED]: the name of an existing S3 bucket  
+`where`    [REQUIRED]: the WHERE clause to pass to the SELECT query; should be in double-quotes  
+`endpoint` [OPTIONAL]: the endpoint of the S3-compatible service  
 
 Examples: 
 - Find all uploaded objects where the origin path starts with `/home/xlem`:  
@@ -95,3 +101,20 @@ Examples:
 Notes:  
 Column names are `key`, `hash`, `path`, and `modified`. All are TEXT except modified which is UINT64.
 For help, see the [GlueSQL WHERE clause docs](https://gluesql.org/docs/0.16.0/sql-syntax/statements/querying/where).
+
+
+### drop
+`s3b drop --bucket <BUCKET> --path <PATH>` 
+
+Delete objects at the specified path. Path may be a full object key or a prefix.
+
+Arguments:  
+`bucket`   [REQUIRED]: the name of an existing S3 bucket  
+`path`     [REQUIRED]: the path to delete  
+`endpoint` [OPTIONAL]: the endpoint of the S3-compatible service  
+
+Examples: 
+- Delete a specific object:  
+  `s3b drop --bucket my-bucket --path mypath/test.txt`
+- Delete all objects under prefix mypath/:  
+  `s3b drop --bucket my-bucket --path mypath/` 
