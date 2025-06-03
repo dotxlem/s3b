@@ -5,6 +5,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use anyhow::anyhow;
 use chrono::{DateTime, Local, Utc};
 use clap::ArgMatches;
 use colored::Colorize;
@@ -34,7 +35,10 @@ pub async fn plan(matches: &ArgMatches) -> anyhow::Result<()> {
     let mut filtered_entries: Vec<PathBuf> = Vec::new();
     for entry in WalkDir::new("./").min_depth(1) {
         let entry = entry.unwrap();
-        let entry = entry.path().canonicalize().unwrap();
+        let entry = match entry.path().canonicalize() {
+            Ok(entry) => entry,
+            Err(_) => return Err(anyhow!("could not resolve {:?}; is this a symlink which no longer exists?", entry.path())),
+        };
         if entry.is_file() && !entry.is_symlink() {
             if include.len() > 0 {
                 if filter(include.clone(), entry.clone()) {

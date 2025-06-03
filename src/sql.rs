@@ -29,11 +29,6 @@ impl Sql {
         self.select_entries(query).await
     }
 
-    pub async fn get_entries_by_hash(&mut self, hash: &str) -> anyhow::Result<Vec<EntriesRow>> {
-        let query = format!("SELECT * FROM entries WHERE hash='{}';", hash);
-        self.select_entries(&query).await
-    }
-
     pub async fn get_entries_where(&mut self, wherestr: &str) -> anyhow::Result<Vec<EntriesRow>> {
         let query = format!("SELECT * FROM entries WHERE {};", wherestr);
         self.select_entries(&query).await

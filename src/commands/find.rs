@@ -1,4 +1,5 @@
 use chrono::{prelude::DateTime, Utc};
+use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 use clap::ArgMatches;
@@ -45,6 +46,9 @@ pub async fn find(matches: &ArgMatches) -> anyhow::Result<()> {
         ]);
 
     println!("{}", table.display().unwrap());
-
+	
+    s3.put(Path::new("_s3b_db/")).await?;
+    std::fs::remove_dir_all("_s3b_db").unwrap();
+	
     Ok(())
 }
